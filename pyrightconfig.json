@@ -1,0 +1,18 @@
+{
+  "venvPath": "backend",
+  "venv": "venv",
+  "pythonVersion": "3.14",
+  "pythonPlatform": "Linux",
+  "extraPaths": ["backend"],
+  "typeCheckingMode": "basic",
+  "reportImplicitRelativeImport": false,
+  "reportCallInDefaultInitializer": false,
+  "reportUnknownMemberType": false,
+  "reportUnknownArgumentType": false,
+  "executionEnvironment": [
+    {
+      "root": "backend",
+      "extraPaths": ["backend"],
+    },
+  ],
+}

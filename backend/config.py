@@ -18,7 +18,9 @@ class Settings:
 
     RATE_LIMIT_RPM: int = int(os.getenv("RATE_LIMIT_RPM", "30"))
 
-    COOKIES_FILE: str | None = os.getenv("COOKIES_FILE")
+    # Path to cookies.txt for age-restricted content
+    COOKIES_PATH: str = os.getenv("COOKIES_PATH", "cookies.txt")
+    
     PROXY_URL: str | None = os.getenv("PROXY_URL")
 
     DOWNLOAD_CHUNK_SIZE: int = 64 * 1024  # 64KB chunks for streaming

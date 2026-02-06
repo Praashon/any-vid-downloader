@@ -9,6 +9,7 @@ from typing import Any
 import yt_dlp
 from config import settings
 from models import FormatInfo, InfoResponse
+from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +27,15 @@ def _build_ydl_opts() -> dict:
         "socket_timeout": 15,
         "extractor_retries": 2,
         "nocheckcertificate": True,
+        # IMPORTANT: When using cookies, yt-dlp might fail if User-Agent doesn't match the one in cookies
+        # We purposely leave "user_agent" unspecified so yt-dlp uses its default or we can try to force a generic one.
+        # Often it helps to NOT set a custom user agent if we are using cookies.
     }
-    if settings.COOKIES_FILE:
-        opts["cookiefile"] = settings.COOKIES_FILE
+    if settings.COOKIES_PATH:
+        opts["cookiefile"] = settings.COOKIES_PATH
+        # Some sites (like Pornhub) are very sensitive to User-Agent mismatch if cookies are present.
+        # We can try to force a common browser UA if extraction fails, but standard yt-dlp behavior is usually safer.
+    
     if settings.PROXY_URL:
         opts["proxy"] = settings.PROXY_URL
     return opts
@@ -209,22 +216,44 @@ def _add_best_merged_format(
     Prepend a 'Best Quality' virtual format that tells the download endpoint
     to let yt-dlp pick the best merged format.
     """
-    # Check if the info has a direct URL for the best format
-    best_url = info.get("url")
+    # Prefer original webpage URL for the best format as it allows yt-dlp to pick streams
+    best_url = info.get("webpage_url") or info.get("url")
     best_height = None
     best_ext = info.get("ext", "mp4")
 
-    if not best_url and formats:
-        # Find best merged format
-        merged = [f for f in formats if f.has_video and f.has_audio]
-        if merged:
-            best = merged[0]
-            best_url = best.url
-            best_height = best.height
-            best_ext = best.extension
+    # Attempt to find what the best height might be from available formats
+    best_video = None
+    best_audio = None
+    
+    if formats:
+        # Separate video-only and audio-only streams
+        video_only = [f for f in formats if f.is_video_only and f.format_id]
+        audio_only = [f for f in formats if f.is_audio and f.format_id]
+        
+        # Sort to find best
+        # Video: precedence by height, then tbr
+        video_only.sort(key=lambda x: (x.height or 0, x.tbr or 0), reverse=True)
+        # Audio: precedence by abr
+        audio_only.sort(key=lambda x: (x.abr or 0), reverse=True)
+        
+        if video_only:
+            best_video = video_only[0]
+        if audio_only:
+            best_audio = audio_only[0]
 
-    if not best_url:
+        # Use best video specs for the label
+        if best_video:
+            best_height = best_video.height
+            best_ext = "mp4" # Force container to MP4 for the merged output
+    
+    if not best_url or not best_video or not best_audio:
+        # Fallback to original logic or just return formats if we can't build a merge
         return formats
+
+    # Construct specific merge URL
+    # Format: merge:VIDEO_ID+AUDIO_ID:WEBPAGE_URL
+    # This allows main.py to resolve the exact streams quickly.
+    merge_url = f"merge:{best_video.format_id}+{best_audio.format_id}:{best_url}"
 
     quality = "Best"
     if best_height:
@@ -239,7 +268,7 @@ def _add_best_merged_format(
 
     best_format = FormatInfo(
         format_id="best",
-        label=f"Best Quality {best_ext.upper()} ({quality})",
+        label=f"Best Quality (Merged) {best_ext.upper()}",
         quality=quality,
         extension=best_ext,
         is_audio=False,
@@ -247,7 +276,7 @@ def _add_best_merged_format(
         has_video=True,
         has_audio=True,
         height=best_height,
-        url=best_url,
+        url=merge_url,
     )
 
     return [best_format] + formats
@@ -282,73 +311,80 @@ def _sync_extract_info(url: str) -> InfoResponse:
         else:
             raise ValueError("Playlist is empty")
 
-    formats = _extract_formats(info)
+    try:
+        formats = _extract_formats(info)
 
-    # Build best audio format
-    audio_formats = [f for f in formats if f.is_audio]
-    video_formats = [f for f in formats if f.has_video]
+        # Build best audio format
+        audio_formats = [f for f in formats if f.is_audio]
+        video_formats = [f for f in formats if f.has_video]
 
-    # Add best merged if we have separate streams
-    if video_formats:
-        formats = _add_best_merged_format(info, formats)
+        # Add best merged if we have separate streams
+        if video_formats:
+            formats = _add_best_merged_format(info, formats)
 
-    # Build best audio MP3 option using yt-dlp's bestaudio
-    if audio_formats or video_formats:
-        best_audio_url = ""
-        best_abr = 0.0
-        for af in audio_formats:
-            afbr = af.abr or af.tbr or 0
-            if afbr > best_abr:
-                best_abr = afbr
-                best_audio_url = af.url
+        # Build best audio MP3 option using yt-dlp's bestaudio
+        if audio_formats or video_formats:
+            best_audio_url = ""
+            best_abr = 0.0
+            for af in audio_formats:
+                afbr = af.abr or af.tbr or 0
+                if afbr > best_abr:
+                    best_abr = afbr
+                    best_audio_url = af.url
 
-        if not best_audio_url and formats:
-            # Use any format URL; the download endpoint will extract audio
-            best_audio_url = formats[0].url
+            if not best_audio_url and formats:
+                # Use any format URL; the download endpoint will extract audio
+                best_audio_url = formats[0].url
 
-        if best_audio_url:
-            mp3_format = FormatInfo(
-                format_id="bestaudio_mp3",
-                label=f"Audio MP3 ({int(best_abr)}kbps)" if best_abr else "Audio MP3",
-                quality=f"{int(best_abr)}kbps" if best_abr else "Audio",
-                extension="mp3",
-                is_audio=True,
-                is_video_only=False,
-                has_video=False,
-                has_audio=True,
-                abr=best_abr if best_abr else None,
-                url=best_audio_url,
-            )
-            formats.append(mp3_format)
+            if best_audio_url:
+                mp3_format = FormatInfo(
+                    format_id="bestaudio_mp3",
+                    label=f"Audio MP3 ({int(best_abr)}kbps)" if best_abr else "Audio MP3",
+                    quality=f"{int(best_abr)}kbps" if best_abr else "Audio",
+                    extension="mp3",
+                    is_audio=True,
+                    is_video_only=False,
+                    has_video=False,
+                    has_audio=True,
+                    abr=best_abr if best_abr else None,
+                    url=best_audio_url,
+                )
+                formats.append(mp3_format)
 
-    duration = info.get("duration")
-    if isinstance(duration, float):
-        duration = int(duration)
+        duration = info.get("duration")
+        if isinstance(duration, float):
+            duration = int(duration)
 
-    thumbnail = info.get("thumbnail")
-    thumbnails = info.get("thumbnails") or []
-    if not thumbnail and thumbnails:
-        thumbnail = thumbnails[-1].get("url")
+        thumbnail = info.get("thumbnail")
+        thumbnails = info.get("thumbnails") or []
+        if not thumbnail and thumbnails:
+            thumbnail = thumbnails[-1].get("url")
 
-    description = info.get("description") or ""
-    if len(description) > 300:
-        description = description[:300] + "..."
+        description = info.get("description") or ""
+        if len(description) > 300:
+            description = description[:300] + "..."
 
-    return InfoResponse(
-        success=True,
-        title=info.get("title") or info.get("fulltitle") or "Untitled",
-        thumbnail=thumbnail,
-        duration=duration,
-        duration_string=_format_duration(duration),
-        uploader=info.get("uploader") or info.get("channel") or "",
-        uploader_url=info.get("uploader_url") or info.get("channel_url"),
-        webpage_url=info.get("webpage_url") or url,
-        view_count=info.get("view_count"),
-        upload_date=info.get("upload_date"),
-        description=description if description else None,
-        extractor=info.get("extractor") or info.get("extractor_key") or "",
-        formats=formats,
-    )
+        return InfoResponse(
+            success=True,
+            title=info.get("title") or info.get("fulltitle") or "Untitled",
+            thumbnail=thumbnail,
+            duration=duration,
+            duration_string=_format_duration(duration),
+            uploader=info.get("uploader") or info.get("channel") or "",
+            uploader_url=info.get("uploader_url") or info.get("channel_url"),
+            webpage_url=info.get("webpage_url") or url,
+            view_count=info.get("view_count"),
+            upload_date=info.get("upload_date"),
+            description=description if description else None,
+            extractor=info.get("extractor") or info.get("extractor_key") or "",
+            formats=formats,
+        )
+    except ValidationError as e:
+        logger.error(f"Validation error during info processing: {e}")
+        raise ValueError("Video data format is invalid or unsupported")
+    except Exception as e:
+        logger.exception("Unexpected error during info processing")
+        raise ValueError("Failed to process video information")
 
 
 async def extract_video_info(url: str) -> InfoResponse:

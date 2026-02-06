@@ -88,3 +88,7 @@ class ErrorResponse(BaseModel):
 class DownloadRequest(BaseModel):
     url: str = Field(..., description="Direct format URL to proxy")
     filename: str = Field("video", description="Desired filename for download")
+
+
+class CookieRequest(BaseModel):
+    content: str = Field(..., description="Netscape formatted cookies content")

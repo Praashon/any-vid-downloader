@@ -67,7 +67,7 @@ export default function VideoDownloader() {
         return;
       }
       setErrorMessage(
-        "Could not connect to the server. Make sure the backend is running."
+        "Could not connect to the server. Make sure the backend is running.",
       );
       setState("error");
     }
@@ -97,20 +97,20 @@ export default function VideoDownloader() {
         doFetch(trimmed);
       }, DEBOUNCE_MS);
     },
-    [doFetch, clearState, state]
+    [doFetch, clearState, state],
   );
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent<HTMLInputElement>) => {
       const pasted = e.clipboardData.getData("text").trim();
       if (pasted && isValidUrl(pasted)) {
-        // Immediately fetch on paste without debounce
+        e.preventDefault(); // Prevent browser from also inserting text (causes duplication)
         setUrl(pasted);
         if (debounceTimer.current) clearTimeout(debounceTimer.current);
         doFetch(pasted);
       }
     },
-    [doFetch]
+    [doFetch],
   );
 
   const handleClear = useCallback(() => {
@@ -134,7 +134,7 @@ export default function VideoDownloader() {
         doFetch(trimmed);
       }
     },
-    [url, doFetch]
+    [url, doFetch],
   );
 
   // Cleanup on unmount

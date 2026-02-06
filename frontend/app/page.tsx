@@ -1,4 +1,5 @@
 import ThemeToggle from "@/components/ThemeToggle";
+import CookieModal from "@/components/CookieModal";
 import VideoDownloader from "@/components/VideoDownloader";
 
 export default function Home() {
@@ -22,7 +23,10 @@ export default function Home() {
             Any<span className="gradient-text">Vid</span>
           </span>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-3">
+          <CookieModal />
+          <ThemeToggle />
+        </div>
       </header>
 
       {/* Main Content */}
